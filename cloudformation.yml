@@ -1,0 +1,256 @@
+﻿---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template to deploy nginxdemos/hello on ECS cluster with associated infrastructure
+Parameters:
+  ECSClusterName:
+    Type: String
+    Default: fargate-nginxdemo-cluster
+  DesiredTaskCount:
+    Type: Number
+    Default: 1   
+Resources:
+    ECSSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: ECS Allowed Ports
+        VpcId: !Ref VPC
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: 0.0.0.0/0
+        SecurityGroupEgress:
+          - IpProtocol: -1
+            FromPort: 0
+            ToPort: 65535
+            CidrIp: 0.0.0.0/0
+    ELBSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: ECS Allowed Ports
+        VpcId: !Ref VPC
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: 0.0.0.0/0
+        SecurityGroupEgress:
+          - IpProtocol: -1
+            FromPort: 0
+            ToPort: 65535
+            CidrIp: 0.0.0.0/0
+    VPC:
+      Type: AWS::EC2::VPC
+      Properties:
+        CidrBlock: 10.1.0.0/16
+        EnableDnsSupport: true
+        EnableDnsHostnames: true
+        Tags:
+          - Key: Name
+            Value: !Sub ${AWS::StackName}-VPC            
+    InternetGateway:
+      Type: AWS::EC2::InternetGateway
+    AttachGateway:
+      Type: AWS::EC2::VPCGatewayAttachment
+      Properties:
+        VpcId: !Ref VPC
+        InternetGatewayId: !Ref InternetGateway
+    PublicSubnetA:      
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId: !Ref VPC
+        CidrBlock: 10.1.10.0/24
+        AvailabilityZone: !Select [ 0, !GetAZs ]       
+        MapPublicIpOnLaunch:  true
+    PublicSubnetB:
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId: !Ref VPC
+        CidrBlock: 10.1.20.0/24
+        AvailabilityZone: !Select [ 1, !GetAZs ] 
+        MapPublicIpOnLaunch:  true   
+    PublicRouteTable:
+      Type: AWS::EC2::RouteTable
+      Properties:
+        VpcId: !Ref VPC
+        Tags:
+         - Key: Name
+           Value: Public
+    PublicRoute1:
+      Type: AWS::EC2::Route
+      DependsOn: AttachGateway
+      Properties:
+        RouteTableId: !Ref PublicRouteTable
+        DestinationCidrBlock: 0.0.0.0/0
+        GatewayId: !Ref InternetGateway
+    PublicSubnetARouteTableAssociation:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+        SubnetId: !Ref PublicSubnetA
+        RouteTableId: !Ref PublicRouteTable
+    PublicSubnetBRouteTableAssociation:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+        SubnetId: !Ref PublicSubnetB
+        RouteTableId: !Ref PublicRouteTable
+    ECSCluster:
+      Type: AWS::ECS::Cluster
+      Properties:
+        CapacityProviders:
+          - FARGATE
+          - FARGATE_SPOT
+        ClusterName: fargate-nginxdemo-cluster
+        ClusterSettings:
+          - Name: containerInsights
+            Value: disabled
+    ECSTaskDefinition:
+      Type: AWS::ECS::TaskDefinition
+      Properties:
+        ContainerDefinitions:
+          - LogConfiguration:
+              Options:
+                awslogs-group: !Ref LogGroup
+                awslogs-region: !Ref 'AWS::Region'
+                awslogs-stream-prefix: ecs
+              LogDriver: awslogs
+              SecretOptions: []
+            DockerLabels: {}
+            Name: nginxdemos-hello
+            Image: nginxdemos/hello
+            Links: []
+            PortMappings:
+            - Name: nginxdemos-hello-80-tcp
+              ContainerPort: 80
+              Protocol: tcp
+              AppProtocol: http
+            EntryPoint: []
+            Command: []
+            EnvironmentFiles: []
+            MountPoints: []
+            VolumesFrom: []
+            DnsServers: []
+            DnsSearchDomains: []
+            ExtraHosts: []
+            DockerSecurityOptions: []
+            Ulimits: []
+            SystemControls: []
+            Cpu: 0
+            Essential: true
+        Family: nginxdemo-task-definition
+        NetworkMode: awsvpc
+        ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+        PlacementConstraints: []
+        RequiresCompatibilities:
+        - FARGATE
+        Cpu: ".25 vCPU"
+        Memory: ".5 GB"
+        Tags:
+         - Key: ecs:taskDefinition:stackId
+           Value:
+             Ref: AWS::StackId
+    ECSService:
+      Type: AWS::ECS::Service
+      Properties:
+        Cluster: fargate-nginxdemo-cluster
+        CapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Base: 0
+          Weight: 1
+        TaskDefinition: !Ref ECSTaskDefinition
+        ServiceName: nginxdemo-service
+        SchedulingStrategy: REPLICA
+        DesiredCount: !Ref DesiredTaskCount
+        LoadBalancers:
+        - ContainerName: nginxdemos-hello
+          ContainerPort: 80
+          LoadBalancerName:
+            Ref: AWS::NoValue
+          TargetGroupArn:
+            Ref: TargetGroup
+        NetworkConfiguration:
+          AwsvpcConfiguration:
+            AssignPublicIp: ENABLED
+            SecurityGroups: 
+              - !Ref ECSSecurityGroup
+            Subnets:
+              - !Ref PublicSubnetA
+              - !Ref PublicSubnetB  
+        PlatformVersion: LATEST
+        DeploymentConfiguration:
+          MaximumPercent: 200
+          MinimumHealthyPercent: 100
+          DeploymentCircuitBreaker:
+            Enable: true
+            Rollback: true
+        DeploymentController:
+          Type: ECS
+        ServiceConnectConfiguration:
+          Enabled: false
+        Tags:
+        - Key: ecs:service:stackId
+          Value:
+            Ref: AWS::StackId
+        EnableECSManagedTags: true
+      DependsOn:
+      - Listener
+    LoadBalancer:
+      Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+      Properties:
+        Type: application
+        Name: nginxdemo-load-balancer
+        SecurityGroups:
+        - !Ref ELBSecurityGroup          
+        Subnets: 
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB     
+    TargetGroup:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        HealthCheckPath: "/"
+        Name: nginxdemo-target-group
+        Port: 80
+        Protocol: HTTP
+        TargetType: ip
+        HealthCheckProtocol: HTTP
+        VpcId: !Ref VPC
+    Listener:
+      Type: AWS::ElasticLoadBalancingV2::Listener
+      Properties:
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn: !Ref TargetGroup
+        LoadBalancerArn: !Ref LoadBalancer
+        Port: 80
+        Protocol: HTTP
+    ECSTaskExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ecs-tasks.amazonaws.com]
+            Action: ['sts:AssumeRole']
+        Path: /
+        Policies:
+          - PolicyName: AmazonECSTaskExecutionRolePolicy
+            PolicyDocument:
+              Statement:
+              - Effect: Allow
+                Action:
+                  # Allow the ECS Tasks to download images from ECR
+                  - 'ecr:GetAuthorizationToken'
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+
+                  # Allow the ECS tasks to upload logs to CloudWatch
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'        
+    LogGroup:
+      Type: 'AWS::Logs::LogGroup'
+      DeletionPolicy: Retain
+      Properties:
+        LogGroupName: 'nginxdemo'
+        RetentionInDays: 7  
